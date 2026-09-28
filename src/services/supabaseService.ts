@@ -8,6 +8,17 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { QueueEntry, TableItem, Reservation, AllocationEvent } from '../types/database';
 
+/**
+ * ============================================================================
+ * HARDCODED SUPABASE CREDENTIALS
+ * ============================================================================
+ * Paste your Supabase Project URL and public Anon Key below.
+ * Once set here, every client (TV display, mobile phones, staff tablets)
+ * connects automatically and permanently without needing any manual setup!
+ */
+export const HARDCODED_SUPABASE_URL = '';
+export const HARDCODED_SUPABASE_ANON_KEY = '';
+
 let supabaseInstance: SupabaseClient | null = null;
 let currentConfig = {
   url: '',
@@ -17,26 +28,30 @@ let currentConfig = {
 export function getSupabaseClient(): SupabaseClient | null {
   if (supabaseInstance) return supabaseInstance;
 
-  // Check stored config or env vars
-  let url = '';
-  let anonKey = '';
+  // 1. Check hardcoded constants first
+  let url = HARDCODED_SUPABASE_URL.trim();
+  let anonKey = HARDCODED_SUPABASE_ANON_KEY.trim();
 
-  if (typeof window !== 'undefined') {
-    try {
-      const stored = localStorage.getItem('queuecraft_supabase_config_v1');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        url = parsed.url || '';
-        anonKey = parsed.anonKey || '';
-      }
-    } catch {
-      // ignore
-    }
+  // 2. Check environment variables
+  if (!url || !anonKey) {
+    url = ((import.meta.env.VITE_SUPABASE_URL as string) || '').trim();
+    anonKey = ((import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '').trim();
   }
 
+  // 3. Fall back to local storage if previously configured
   if (!url || !anonKey) {
-    url = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('queuecraft_supabase_config_v1');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          url = (parsed.url || '').trim();
+          anonKey = (parsed.anonKey || '').trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
 
   if (url && anonKey && url.startsWith('http')) {

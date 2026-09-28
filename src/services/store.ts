@@ -23,7 +23,7 @@ import {
 } from './initialData';
 import { findBestCandidateForTable } from './tableAllocationService';
 import { sendTableAllocationWhatsApp } from './notificationService';
-import { getSupabaseClient, initSupabase } from './supabaseService';
+import { getSupabaseClient, initSupabase, HARDCODED_SUPABASE_URL, HARDCODED_SUPABASE_ANON_KEY } from './supabaseService';
 
 const STORAGE_KEY_TABLES = 'queuecraft_tables_v1';
 const STORAGE_KEY_QUEUE = 'queuecraft_queue_v1';
@@ -60,7 +60,6 @@ class RestaurantStore {
 
   private customQrUrl: string = '';
   private supabaseChannel: any = null;
-  private syncInterval: any = null;
 
   constructor() {
     this.loadFromStorage();
@@ -139,15 +138,7 @@ class RestaurantStore {
           }
         }, () => {});
 
-      // 3. Periodic polling fallback every 3 seconds for continuous cross-device sync
-      if (this.syncInterval) {
-        clearInterval(this.syncInterval);
-      }
-      this.syncInterval = setInterval(() => {
-        this.fetchLatestFromSupabase();
-      }, 3000);
-
-      // 4. Setup Supabase Realtime WebSocket subscription
+      // 3. Setup Supabase Realtime WebSocket subscription
       if (this.supabaseChannel) {
         client.removeChannel(this.supabaseChannel);
       }
@@ -233,14 +224,21 @@ class RestaurantStore {
       const storedNotifs = localStorage.getItem(STORAGE_KEY_NOTIFS);
       if (storedNotifs) this.notifications = JSON.parse(storedNotifs);
 
-      const storedSupabase = localStorage.getItem(STORAGE_KEY_SUPABASE);
-      if (storedSupabase) {
-        this.supabaseConfig = JSON.parse(storedSupabase);
+      const hardcodedUrl = HARDCODED_SUPABASE_URL.trim();
+      const hardcodedKey = HARDCODED_SUPABASE_ANON_KEY.trim();
+
+      if (hardcodedUrl && hardcodedKey) {
+        this.supabaseConfig = { url: hardcodedUrl, anonKey: hardcodedKey, connected: true };
       } else {
-        const envUrl = import.meta.env.VITE_SUPABASE_URL || '';
-        const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-        if (envUrl && envKey) {
-          this.supabaseConfig = { url: envUrl, anonKey: envKey, connected: true };
+        const storedSupabase = localStorage.getItem(STORAGE_KEY_SUPABASE);
+        if (storedSupabase) {
+          this.supabaseConfig = JSON.parse(storedSupabase);
+        } else {
+          const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+          const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+          if (envUrl && envKey) {
+            this.supabaseConfig = { url: envUrl, anonKey: envKey, connected: true };
+          }
         }
       }
     } catch (err) {
@@ -418,41 +416,40 @@ class RestaurantStore {
     // Persist to Supabase if connected
     const client = getSupabaseClient();
     if (client) {
-      client
-        .from('restaurants')
-        .upsert({
-          id: this.restaurant.id,
-          name: this.restaurant.name,
-          slug: this.restaurant.slug,
-          address: this.restaurant.address,
-          phone: this.restaurant.phone,
-          max_party_size: this.restaurant.max_party_size,
-        })
-        .then(() => {
-          return client.from('queue_entries').insert({
-            id: newEntry.id,
-            restaurant_id: newEntry.restaurant_id,
-            token_number: newEntry.token_number,
-            queue_date: newEntry.queue_date,
-            customer_name: newEntry.customer_name,
-            phone: newEntry.phone,
-            email: newEntry.email,
-            party_size: newEntry.party_size,
-            status: newEntry.status,
-            position: newEntry.position,
-            joined_at: newEntry.joined_at,
-            notes: newEntry.notes,
+      try {
+        await client
+          .from('restaurants')
+          .upsert({
+            id: this.restaurant.id,
+            name: this.restaurant.name,
+            slug: this.restaurant.slug,
+            address: this.restaurant.address,
+            phone: this.restaurant.phone,
+            max_party_size: this.restaurant.max_party_size,
           });
-        })
-        .then((res: any) => {
-          if (res?.error) console.warn('Supabase joinQueue error:', res.error);
-        }, (err: unknown) => {
-          console.warn('Supabase joinQueue exception:', err);
-        });
-    }
 
-    // Check if an available table can immediately seat this party!
-    this.evaluateAutomaticAllocation();
+        const { error } = await client.from('queue_entries').insert({
+          id: newEntry.id,
+          restaurant_id: newEntry.restaurant_id,
+          token_number: newEntry.token_number,
+          queue_date: newEntry.queue_date,
+          customer_name: newEntry.customer_name,
+          phone: newEntry.phone,
+          email: newEntry.email || null,
+          party_size: newEntry.party_size,
+          status: newEntry.status,
+          position: newEntry.position,
+          joined_at: newEntry.joined_at,
+          notes: newEntry.notes || null,
+        });
+
+        if (error) {
+          console.warn('Supabase joinQueue insert error:', error.message || error);
+        }
+      } catch (err: unknown) {
+        console.warn('Supabase joinQueue exception:', err);
+      }
+    }
 
     return newEntry;
   }

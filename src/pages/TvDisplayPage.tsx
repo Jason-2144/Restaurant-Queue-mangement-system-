@@ -4,7 +4,6 @@ import {
   CheckCircle,
   Clock,
   User,
-  RotateCw,
   Volume2,
   VolumeX,
   Maximize2,
@@ -16,18 +15,25 @@ import confetti from 'canvas-confetti';
 import { useRestaurantStore } from '../hooks/useRestaurantStore';
 import { QRCodeDisplay } from '../components/QRCodeDisplay';
 import { audioAnnouncementService } from '../services/speechService';
-import { AllocationEvent } from '../types/database';
+import { getSupabaseClient } from '../services/supabaseService';
+import { AllocationEvent, QueueEntry } from '../types/database';
 
 export function TvDisplayPage() {
   const {
     restaurant,
-    allocatedQueue,
-    waitingQueue,
+    allocatedQueue: storeAllocatedQueue,
+    waitingQueue: storeWaitingQueue,
     tables,
     latestAllocationEvent,
     clearLatestAllocationEvent,
     customQrUrl,
   } = useRestaurantStore();
+
+  // TV Queue React State (Updated in real time by Supabase Realtime)
+  const [queueList, setQueueList] = useState<QueueEntry[]>(() => [
+    ...storeAllocatedQueue,
+    ...storeWaitingQueue,
+  ]);
 
   const [activeAnnouncement, setActiveAnnouncement] = useState<AllocationEvent | null>(null);
   const [audioEnabled, setAudioEnabled] = useState<boolean>(true);
@@ -36,6 +42,133 @@ export function TvDisplayPage() {
 
   const announcementTimeoutRef = useRef<number | null>(null);
   const lastHandledEventIdRef = useRef<string | null>(null);
+
+  // 1. Initial page load: Supabase SELECT → React state
+  // 2. Realtime subscription: Supabase Realtime → React state
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    // Initial SELECT from Supabase
+    supabase
+      .from('queue_entries')
+      .select('*')
+      .in('status', ['WAITING', 'ALLOCATED'])
+      .order('joined_at', { ascending: true })
+      .then(({ data, error }) => {
+        if (!error && data && data.length > 0) {
+          setQueueList(data);
+        }
+      });
+
+    // Supabase Realtime Channel: Listen to INSERT, UPDATE, DELETE
+    const channel = supabase
+      .channel('tv-queue')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'queue_entries',
+        },
+        (payload) => {
+          const newEntry = payload.new as QueueEntry;
+          setQueueList((prev) => {
+            // Prevent duplicate entries if the same realtime event is received more than once
+            if (prev.some((e) => e.id === newEntry.id || e.token_number === newEntry.token_number)) {
+              return prev;
+            }
+            return [...prev, newEntry];
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'queue_entries',
+        },
+        (payload) => {
+          const updatedEntry = payload.new as QueueEntry;
+          setQueueList((prev) => {
+            // If customer finished dining or cancelled, remove from TV display
+            if (['COMPLETED', 'CANCELLED'].includes(updatedEntry.status)) {
+              return prev.filter((e) => e.id !== updatedEntry.id);
+            }
+            const exists = prev.some((e) => e.id === updatedEntry.id);
+            if (exists) {
+              return prev.map((e) => (e.id === updatedEntry.id ? updatedEntry : e));
+            }
+            if (['WAITING', 'ALLOCATED'].includes(updatedEntry.status)) {
+              return [...prev, updatedEntry];
+            }
+            return prev;
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'queue_entries',
+        },
+        (payload) => {
+          const deletedEntry = payload.old as { id?: string };
+          if (deletedEntry?.id) {
+            setQueueList((prev) => prev.filter((e) => e.id !== deletedEntry.id));
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'allocation_events',
+        },
+        (payload) => {
+          const event = payload.new as AllocationEvent;
+          if (event && event.token_number && event.table_number) {
+            setActiveAnnouncement(event);
+            confetti({
+              particleCount: 120,
+              spread: 90,
+              origin: { y: 0.4 },
+              colors: ['#EB5A00', '#009A60', '#F59E0B', '#F97316', '#FFFFFF'],
+            });
+            if (audioEnabled) {
+              audioAnnouncementService.speakAllocation(event.token_number, event.table_number);
+            }
+            if (announcementTimeoutRef.current) {
+              window.clearTimeout(announcementTimeoutRef.current);
+            }
+            announcementTimeoutRef.current = window.setTimeout(() => {
+              setActiveAnnouncement(null);
+            }, 8500);
+          }
+        }
+      )
+      .subscribe();
+
+    // Clean up channel subscription on unmount
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [audioEnabled]);
+
+  // Fallback for offline/local state when Supabase client is not connected
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setQueueList([...storeAllocatedQueue, ...storeWaitingQueue]);
+    }
+  }, [storeAllocatedQueue, storeWaitingQueue]);
+
+  // Derived queues directly from TV React state
+  const tvAllocatedQueue = queueList.filter((q) => q.status === 'ALLOCATED');
+  const tvWaitingQueue = queueList.filter((q) => q.status === 'WAITING');
 
   // Live ticking clock in 12-hour format with AM/PM (e.g. 09:42 PM)
   useEffect(() => {
@@ -61,7 +194,7 @@ export function TvDisplayPage() {
   // Map assigned table numbers for allocated queue
   const tableMap = new Map(tables.map((t) => [t.id, t.table_number]));
 
-  // Watch for incoming allocation events to trigger TV overlay and speech
+  // Watch for incoming allocation events from local store as well
   useEffect(() => {
     if (latestAllocationEvent && latestAllocationEvent.id !== lastHandledEventIdRef.current) {
       lastHandledEventIdRef.current = latestAllocationEvent.id;
@@ -121,10 +254,6 @@ export function TvDisplayPage() {
     }
   };
 
-  const handleManualRefresh = () => {
-    window.location.reload();
-  };
-
   return (
     <div className="h-screen w-screen bg-[#F4F6F8] text-stone-900 overflow-hidden flex flex-col justify-between select-none relative font-sans">
       {/* ========================================================================= */}
@@ -175,18 +304,8 @@ export function TvDisplayPage() {
           </span>
         </div>
 
-        {/* Right: Refresh, Clock, Live Queue Indicator */}
+        {/* Right: Clock, Live Queue Indicator */}
         <div className="w-1/4 flex items-center justify-end gap-3 sm:gap-4 text-xs font-semibold text-stone-600">
-          <button
-            onClick={handleManualRefresh}
-            className="hidden sm:flex items-center gap-1 text-stone-600 hover:text-stone-900 transition-colors cursor-pointer"
-          >
-            <RotateCw className="w-3.5 h-3.5 text-stone-500" />
-            <span>Refresh</span>
-          </button>
-
-          <span className="hidden sm:inline text-stone-300">|</span>
-
           <span className="font-bold text-stone-900 font-mono-numbers text-xs sm:text-sm">
             {currentTime || '09:42 PM'}
           </span>
@@ -273,7 +392,7 @@ export function TvDisplayPage() {
 
             {/* Allocated Cards Row */}
             <div className="p-3 sm:p-4 bg-white flex items-center gap-3 min-h-[120px] overflow-x-auto">
-              {allocatedQueue.length === 0 ? (
+              {tvAllocatedQueue.length === 0 ? (
                 <div className="w-full py-4 flex flex-col items-center justify-center text-center text-stone-400">
                   <LayoutGrid className="w-7 h-7 text-stone-300 mb-1" />
                   <span className="text-xs font-semibold text-stone-500">
@@ -282,7 +401,7 @@ export function TvDisplayPage() {
                 </div>
               ) : (
                 <div className="flex items-center gap-3 w-full">
-                  {allocatedQueue.slice(0, 3).map((entry) => {
+                  {tvAllocatedQueue.slice(0, 3).map((entry) => {
                     const tableNumber = entry.assigned_table_id
                       ? tableMap.get(entry.assigned_table_id) || 'Ready'
                       : 'Ready';
@@ -311,7 +430,7 @@ export function TvDisplayPage() {
                     );
                   })}
 
-                  {allocatedQueue.length === 1 && (
+                  {tvAllocatedQueue.length === 1 && (
                     <div className="flex-1 flex flex-col items-center justify-center text-stone-300 py-2">
                       <LayoutGrid className="w-6 h-6 text-stone-200 mb-0.5" />
                       <span className="text-[11px] text-stone-400">
@@ -338,7 +457,7 @@ export function TvDisplayPage() {
 
             {/* Waiting Grid Cards */}
             <div className="flex-1 min-h-0 p-3 sm:p-4 bg-white flex flex-col justify-between overflow-hidden">
-              {waitingQueue.length === 0 ? (
+              {tvWaitingQueue.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-stone-400">
                   <Clock className="w-8 h-8 text-stone-300 mb-1" />
                   <span className="text-xs font-medium text-stone-500">
@@ -347,7 +466,7 @@ export function TvDisplayPage() {
                 </div>
               ) : (
                 <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-2.5 overflow-hidden">
-                  {waitingQueue.slice(0, 16).map((entry) => (
+                  {tvWaitingQueue.slice(0, 16).map((entry) => (
                     <div
                       key={entry.id}
                       className="bg-white border border-stone-200/90 rounded-xl p-2 sm:p-2.5 flex flex-col items-center justify-center text-center shadow-2xs hover:border-orange-300 transition-colors"
