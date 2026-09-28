@@ -73,7 +73,7 @@ export function CustomerJoinPage() {
             {restaurant.name}
           </h1>
           <p className="text-stone-500 text-sm mt-1">
-            {restaurant.address || 'Authentic Pure Vegetarian Fine Dining'}
+            {restaurant.address || 'Delicious Multi-Cuisine Fine Dining'}
           </p>
         </div>
 

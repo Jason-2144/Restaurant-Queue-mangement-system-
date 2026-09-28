@@ -257,7 +257,7 @@ export function TvDisplayPage() {
   return (
     <div className="h-screen w-screen bg-[#F4F6F8] text-stone-900 overflow-hidden flex flex-col justify-between select-none relative font-sans">
       {/* ========================================================================= */}
-      {/* 1. TOP HEADER (Exact Geetham reference branding) */}
+      {/* 1. TOP HEADER (Nice Restaurant branding) */}
       {/* ========================================================================= */}
       <header className="h-14 sm:h-16 shrink-0 px-6 sm:px-8 bg-white border-b border-stone-200/80 flex items-center justify-between shadow-2xs z-10">
         {/* Left spacer / quick actions */}
@@ -284,7 +284,7 @@ export function TvDisplayPage() {
           </button>
         </div>
 
-        {/* Center: GEETHAM™ Brand Lockup */}
+        {/* Center: Brand Lockup */}
         <div className="flex flex-col items-center justify-center text-center">
           <div className="flex items-center gap-1.5">
             {/* Fork & Spoon Icon in Orange */}
@@ -295,8 +295,8 @@ export function TvDisplayPage() {
             >
               <path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm8-7c-1.66 0-3 1.34-3 3v5c0 1.66 1.34 3 3 3v9h2.5V2c-.83 0-1.72.34-2.5.83V2z" />
             </svg>
-            <span className="text-xl sm:text-2xl font-black text-[#EB5A00] tracking-wider">
-              GEETHAM™
+            <span className="text-xl sm:text-2xl font-black text-[#EB5A00] tracking-wider uppercase">
+              {restaurant.name || 'Nice Restaurant'}
             </span>
           </div>
           <span className="text-[11px] font-semibold text-[#EB5A00]/90 tracking-normal -mt-0.5">
@@ -501,7 +501,7 @@ export function TvDisplayPage() {
       {/* ========================================================================= */}
       <footer className="h-12 sm:h-13 shrink-0 bg-[#17365D] text-white px-6 flex flex-col items-center justify-center text-center shadow-inner z-10">
         <h4 className="font-bold text-xs sm:text-sm tracking-wide">
-          {restaurant.name || 'Geetham Veg Restaurant'}
+          {restaurant.name || 'Nice Restaurant'}
         </h4>
         <p className="text-[11px] text-blue-200/90 font-normal">
           Please approach the front desk for assistance

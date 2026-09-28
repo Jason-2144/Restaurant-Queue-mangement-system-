@@ -2,8 +2,8 @@ import { Restaurant, TableItem, QueueEntry, Reservation, NotificationRecord, Sta
 
 export const DEFAULT_RESTAURANT: Restaurant = {
   id: 'rest_geetham_001',
-  name: 'Geetham Veg Restaurant',
-  slug: 'geetham-veg',
+  name: 'Nice Restaurant',
+  slug: 'nice-restaurant',
   logo_url: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=120&auto=format&fit=crop&q=80',
   address: '14 Usman Road, T. Nagar, Chennai',
   phone: '+91 44 2815 6789',
@@ -287,7 +287,7 @@ export const INITIAL_NOTIFICATIONS: NotificationRecord[] = [
     queue_entry_id: 'queue_517',
     channel: 'WHATSAPP',
     recipient: '+91 98401 23456',
-    message: `🎉 Great news!\n\nHello Rahul Sharma! Your table is ready.\nPlease make your way to the host stand.\n\nTable: 64\n\nWe look forward to serving you at Geetham Veg Restaurant!`,
+    message: `🎉 Great news!\n\nHello Rahul Sharma! Your table is ready.\nPlease make your way to the host stand.\n\nTable: 64\n\nWe look forward to serving you at Nice Restaurant!`,
     status: 'SENT',
     created_at: minAgo(3),
   },
@@ -297,14 +297,14 @@ export const INITIAL_NOTIFICATIONS: NotificationRecord[] = [
     queue_entry_id: 'queue_518',
     channel: 'WHATSAPP',
     recipient: '+91 98402 34567',
-    message: `🎉 Great news!\n\nHello Priya Krishnan! Your table is ready.\nPlease make your way to the host stand.\n\nTable: 104\n\nWe look forward to serving you at Geetham Veg Restaurant!`,
+    message: `🎉 Great news!\n\nHello Priya Krishnan! Your table is ready.\nPlease make your way to the host stand.\n\nTable: 104\n\nWe look forward to serving you at Nice Restaurant!`,
     status: 'SENT',
     created_at: minAgo(2),
   },
 ];
 
 export const INITIAL_STAFF: StaffMember[] = [
-  { id: 'stf_01', restaurant_id: 'rest_geetham_001', name: 'Manish Kumar', email: 'manish@geetham.com', role: 'HEAD_HOST', created_at: minAgo(500) },
-  { id: 'stf_02', restaurant_id: 'rest_geetham_001', name: 'Kavitha Devi', email: 'kavitha@geetham.com', role: 'WAITER', created_at: minAgo(500) },
-  { id: 'stf_03', restaurant_id: 'rest_geetham_001', name: 'Govind Raj', email: 'govind@geetham.com', role: 'WAITER', created_at: minAgo(500) },
+  { id: 'stf_01', restaurant_id: 'rest_geetham_001', name: 'Manish Kumar', email: 'manish@nicerestaurant.com', role: 'HEAD_HOST', created_at: minAgo(500) },
+  { id: 'stf_02', restaurant_id: 'rest_geetham_001', name: 'Kavitha Devi', email: 'kavitha@nicerestaurant.com', role: 'WAITER', created_at: minAgo(500) },
+  { id: 'stf_03', restaurant_id: 'rest_geetham_001', name: 'Govind Raj', email: 'govind@nicerestaurant.com', role: 'WAITER', created_at: minAgo(500) },
 ];

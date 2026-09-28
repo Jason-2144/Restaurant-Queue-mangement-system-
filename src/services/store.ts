@@ -210,7 +210,22 @@ class RestaurantStore {
 
     try {
       const storedRest = localStorage.getItem(STORAGE_KEY_RESTAURANT);
-      if (storedRest) this.restaurant = JSON.parse(storedRest);
+      if (storedRest) {
+        const parsed = JSON.parse(storedRest);
+        if (!parsed.name || parsed.name.includes('Geetham')) {
+          this.restaurant = {
+            ...DEFAULT_RESTAURANT,
+            ...parsed,
+            name: 'Nice Restaurant',
+            slug: 'nice-restaurant',
+          };
+          localStorage.setItem(STORAGE_KEY_RESTAURANT, JSON.stringify(this.restaurant));
+        } else {
+          this.restaurant = parsed;
+        }
+      } else {
+        this.restaurant = DEFAULT_RESTAURANT;
+      }
 
       const storedTables = localStorage.getItem(STORAGE_KEY_TABLES);
       if (storedTables) this.tables = JSON.parse(storedTables);

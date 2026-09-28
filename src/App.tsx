@@ -124,7 +124,7 @@ function PrototypePortal() {
 
       {/* Footer */}
       <footer className="text-center text-xs text-stone-400 mt-10">
-        QueueCraft · Geetham Veg Prototype · Realtime PostgreSQL Architecture
+        QueueCraft · Nice Restaurant · Realtime PostgreSQL Architecture
       </footer>
     </div>
   );
