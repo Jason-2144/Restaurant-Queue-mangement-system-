@@ -60,6 +60,7 @@ class RestaurantStore {
 
   private customQrUrl: string = '';
   private supabaseChannel: any = null;
+  private syncInterval: any = null;
 
   constructor() {
     this.loadFromStorage();
@@ -88,24 +89,43 @@ class RestaurantStore {
     }
   }
 
+  private fetchLatestFromSupabase() {
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    // Fetch active queue entries
+    client
+      .from('queue_entries')
+      .select('*')
+      .in('status', ['WAITING', 'ALLOCATED', 'OCCUPIED'])
+      .then(({ data, error }) => {
+        if (!error && data && Array.isArray(data)) {
+          // Check if differences exist
+          const hasDiff = data.length !== this.queue.filter(q => ['WAITING', 'ALLOCATED', 'OCCUPIED'].includes(q.status)).length ||
+            data.some(d => {
+              const local = this.queue.find(q => q.id === d.id);
+              return !local || local.status !== d.status;
+            });
+
+          if (hasDiff) {
+            // Merge with local queue
+            const otherEntries = this.queue.filter(q => !['WAITING', 'ALLOCATED', 'OCCUPIED'].includes(q.status));
+            this.queue = [...data, ...otherEntries];
+            this.recalculatePositions();
+            this.saveToStorage();
+            this.notify();
+          }
+        }
+      }, () => {});
+  }
+
   private initSupabaseSync() {
     const client = getSupabaseClient();
     if (!client) return;
 
     try {
-      // 1. Fetch live queue entries from Supabase
-      client
-        .from('queue_entries')
-        .select('*')
-        .in('status', ['WAITING', 'ALLOCATED', 'OCCUPIED'])
-        .then(({ data, error }) => {
-          if (!error && data && data.length > 0) {
-            this.queue = data;
-            this.recalculatePositions();
-            this.saveToStorage();
-            this.notify();
-          }
-        });
+      // 1. Fetch live queue entries from Supabase immediately
+      this.fetchLatestFromSupabase();
 
       // 2. Fetch live tables from Supabase
       client
@@ -117,9 +137,17 @@ class RestaurantStore {
             this.saveToStorage();
             this.notify();
           }
-        });
+        }, () => {});
 
-      // 3. Setup Realtime subscription
+      // 3. Periodic polling fallback every 3 seconds for continuous cross-device sync
+      if (this.syncInterval) {
+        clearInterval(this.syncInterval);
+      }
+      this.syncInterval = setInterval(() => {
+        this.fetchLatestFromSupabase();
+      }, 3000);
+
+      // 4. Setup Supabase Realtime WebSocket subscription
       if (this.supabaseChannel) {
         client.removeChannel(this.supabaseChannel);
       }
@@ -391,23 +419,35 @@ class RestaurantStore {
     const client = getSupabaseClient();
     if (client) {
       client
-        .from('queue_entries')
-        .insert({
-          id: newEntry.id,
-          restaurant_id: newEntry.restaurant_id,
-          token_number: newEntry.token_number,
-          queue_date: newEntry.queue_date,
-          customer_name: newEntry.customer_name,
-          phone: newEntry.phone,
-          email: newEntry.email,
-          party_size: newEntry.party_size,
-          status: newEntry.status,
-          position: newEntry.position,
-          joined_at: newEntry.joined_at,
-          notes: newEntry.notes,
+        .from('restaurants')
+        .upsert({
+          id: this.restaurant.id,
+          name: this.restaurant.name,
+          slug: this.restaurant.slug,
+          address: this.restaurant.address,
+          phone: this.restaurant.phone,
+          max_party_size: this.restaurant.max_party_size,
         })
-        .then(({ error }) => {
-          if (error) console.warn('Supabase joinQueue error:', error);
+        .then(() => {
+          return client.from('queue_entries').insert({
+            id: newEntry.id,
+            restaurant_id: newEntry.restaurant_id,
+            token_number: newEntry.token_number,
+            queue_date: newEntry.queue_date,
+            customer_name: newEntry.customer_name,
+            phone: newEntry.phone,
+            email: newEntry.email,
+            party_size: newEntry.party_size,
+            status: newEntry.status,
+            position: newEntry.position,
+            joined_at: newEntry.joined_at,
+            notes: newEntry.notes,
+          });
+        })
+        .then((res: any) => {
+          if (res?.error) console.warn('Supabase joinQueue error:', res.error);
+        }, (err: unknown) => {
+          console.warn('Supabase joinQueue exception:', err);
         });
     }
 
