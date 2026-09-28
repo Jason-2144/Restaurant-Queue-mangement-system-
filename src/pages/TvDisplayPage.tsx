@@ -26,6 +26,7 @@ export function TvDisplayPage() {
     tables,
     latestAllocationEvent,
     clearLatestAllocationEvent,
+    customQrUrl,
   } = useRestaurantStore();
 
   const [activeAnnouncement, setActiveAnnouncement] = useState<AllocationEvent | null>(null);
@@ -54,9 +55,8 @@ export function TvDisplayPage() {
   }, []);
 
   // Compute join URL for QR Code
-  const joinUrl = typeof window !== 'undefined'
-    ? `${window.location.origin}/join`
-    : 'https://restaurant.app/join';
+  const baseUrl = customQrUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+  const joinUrl = baseUrl ? `${baseUrl.replace(/\/+$/, '')}/join` : 'https://restaurant.app/join';
 
   // Map assigned table numbers for allocated queue
   const tableMap = new Map(tables.map((t) => [t.id, t.table_number]));

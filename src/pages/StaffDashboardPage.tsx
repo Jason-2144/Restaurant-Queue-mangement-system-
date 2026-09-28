@@ -21,9 +21,15 @@ import {
   Check,
   X,
   HelpCircle,
+  Database,
+  Copy,
+  CheckCircle2,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { useRestaurantStore } from '../hooks/useRestaurantStore';
 import { TableItem, QueueEntry, TableStatus } from '../types/database';
+import { testSupabaseConnection, seedSupabaseDatabase } from '../services/supabaseService';
 
 export function StaffDashboardPage() {
   const {
@@ -41,6 +47,10 @@ export function StaffDashboardPage() {
     resetToDemoData,
     addReservation,
     updateReservationStatus,
+    supabaseConfig,
+    setSupabaseConfig,
+    customQrUrl,
+    setCustomQrUrl,
   } = useRestaurantStore();
 
   const [activeTab, setActiveTab] = useState<'queue' | 'tables' | 'reservations' | 'whatsapp'>('queue');
@@ -58,8 +68,21 @@ export function StaffDashboardPage() {
   const [resTime, setResTime] = useState('20:00');
   const [resDate, setResDate] = useState(new Date().toISOString().split('T')[0]);
 
-  // Schema Viewer Modal
+  // Supabase Backend Settings Modal State
   const [showSchemaModal, setShowSchemaModal] = useState(false);
+  const [supabaseUrlInput, setSupabaseUrlInput] = useState(supabaseConfig.url || '');
+  const [supabaseKeyInput, setSupabaseKeyInput] = useState(supabaseConfig.anonKey || '');
+  const [qrUrlInput, setQrUrlInput] = useState(customQrUrl || '');
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [connectionResult, setConnectionResult] = useState<{
+    tested: boolean;
+    connected: boolean;
+    hasTables?: boolean;
+    message: string;
+  } | null>(null);
+  const [isSeeding, setIsSeeding] = useState(false);
+  const [seedResult, setSeedResult] = useState<string | null>(null);
+  const [copiedSql, setCopiedSql] = useState(false);
 
   // Table lookup map
   const tableMap = new Map<string, TableItem>(tables.map((t) => [t.id, t]));
@@ -150,6 +173,144 @@ export function StaffDashboardPage() {
     setResPhone('');
   };
 
+  const handleTestSupabaseConnection = async () => {
+    setIsTestingConnection(true);
+    setConnectionResult(null);
+    try {
+      const res = await testSupabaseConnection(supabaseUrlInput, supabaseKeyInput);
+      setConnectionResult({
+        tested: true,
+        connected: res.connected,
+        hasTables: res.hasTables,
+        message: res.message,
+      });
+      if (res.connected) {
+        setSupabaseConfig(supabaseUrlInput, supabaseKeyInput);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setConnectionResult({
+        tested: true,
+        connected: false,
+        message: `Connection failed: ${msg}`,
+      });
+    } finally {
+      setIsTestingConnection(false);
+    }
+  };
+
+  const handleSeedDatabase = async () => {
+    setIsSeeding(true);
+    setSeedResult(null);
+    try {
+      const res = await seedSupabaseDatabase({
+        restaurant,
+        tables,
+        queue,
+      });
+      setSeedResult(res.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSeedResult(`Seeding error: ${msg}`);
+    } finally {
+      setIsSeeding(false);
+    }
+  };
+
+  const handleCopySchema = () => {
+    const sqlContent = `-- QueueCraft PostgreSQL / Supabase Schema
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE IF NOT EXISTS public.restaurants (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    logo_url TEXT,
+    address TEXT,
+    phone TEXT,
+    max_party_size INT DEFAULT 12,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.tables (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    restaurant_id UUID NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+    table_number TEXT NOT NULL,
+    capacity INT NOT NULL CHECK (capacity > 0),
+    status TEXT NOT NULL DEFAULT 'AVAILABLE' CHECK (status IN ('AVAILABLE', 'ALLOCATED', 'OCCUPIED', 'CLEANING')),
+    section TEXT DEFAULT 'Main Dining',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(restaurant_id, table_number)
+);
+
+CREATE TABLE IF NOT EXISTS public.queue_entries (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    restaurant_id UUID NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+    token_number TEXT NOT NULL,
+    queue_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    customer_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    email TEXT,
+    party_size INT NOT NULL CHECK (party_size > 0),
+    status TEXT NOT NULL DEFAULT 'WAITING' CHECK (status IN ('WAITING', 'ALLOCATED', 'OCCUPIED', 'COMPLETED', 'CANCELLED')),
+    position INT DEFAULT 1,
+    assigned_table_id UUID REFERENCES public.tables(id) ON DELETE SET NULL,
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    allocated_at TIMESTAMPTZ,
+    seated_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.reservations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    restaurant_id UUID NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+    customer_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    email TEXT,
+    party_size INT NOT NULL CHECK (party_size > 0),
+    reservation_date DATE NOT NULL,
+    reservation_time TIME NOT NULL,
+    assigned_table_id UUID REFERENCES public.tables(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'CONFIRMED' CHECK (status IN ('CONFIRMED', 'SEATED', 'CANCELLED', 'NO_SHOW')),
+    special_requests TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.allocation_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    restaurant_id UUID NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+    queue_entry_id UUID NOT NULL REFERENCES public.queue_entries(id) ON DELETE CASCADE,
+    table_id UUID NOT NULL REFERENCES public.tables(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL DEFAULT 'AUTO_ALLOCATED' CHECK (event_type IN ('AUTO_ALLOCATED', 'MANUAL_ALLOCATED', 'REALLOCATED', 'RELEASED')),
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.notifications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    restaurant_id UUID NOT NULL REFERENCES public.restaurants(id) ON DELETE CASCADE,
+    queue_entry_id UUID NOT NULL REFERENCES public.queue_entries(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL DEFAULT 'WHATSAPP' CHECK (channel IN ('WHATSAPP', 'SMS')),
+    recipient TEXT NOT NULL,
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'SENT' CHECK (status IN ('SENT', 'FAILED')),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable Realtime
+ALTER PUBLICATION supabase_realtime ADD TABLE public.queue_entries, public.tables, public.allocation_events;
+`;
+    navigator.clipboard.writeText(sqlContent);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 3000);
+  };
+
   return (
     <div className="min-h-screen bg-[#FBF9F5] text-stone-900 flex flex-col font-sans">
       {/* Top Bar: Brand, Navigation tabs, Actions */}
@@ -216,6 +377,19 @@ export function StaffDashboardPage() {
 
         {/* Header Right Actions */}
         <div className="flex items-center gap-3">
+          {/* Supabase Connection Status Pill */}
+          <button
+            onClick={() => setShowSchemaModal(true)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+              supabaseConfig.connected
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                : 'bg-stone-100 hover:bg-stone-200 border-stone-200 text-stone-700'
+            }`}
+          >
+            <Database className="w-3.5 h-3.5 text-emerald-600" />
+            <span>{supabaseConfig.connected ? 'Supabase Connected' : 'Connect Supabase'}</span>
+          </button>
+
           {/* Quick TV Link */}
           <a
             href="/tv"
@@ -246,14 +420,6 @@ export function StaffDashboardPage() {
             className="p-2 rounded-xl text-stone-500 hover:text-stone-900 hover:bg-stone-100 transition-colors cursor-pointer"
           >
             <RotateCcw className="w-4 h-4" />
-          </button>
-
-          <button
-            onClick={() => setShowSchemaModal(true)}
-            title="View Supabase Schema SQL & Config"
-            className="p-2 rounded-xl text-stone-500 hover:text-stone-900 hover:bg-stone-100 transition-colors cursor-pointer"
-          >
-            <Sliders className="w-4 h-4" />
           </button>
         </div>
       </header>
@@ -934,17 +1100,23 @@ export function StaffDashboardPage() {
       )}
 
       {/* ========================================================================= */}
-      {/* SCHEMA & BACKEND SETTINGS MODAL */}
+      {/* SUPABASE CLOUD & SCHEMA SETTINGS MODAL */}
       {/* ========================================================================= */}
       {showSchemaModal && (
         <div className="fixed inset-0 z-50 bg-stone-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-stone-200 max-h-[85vh] flex flex-col">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-stone-200 max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
             <div className="flex items-center justify-between pb-3 border-b border-stone-100">
-              <div>
-                <h3 className="text-base font-bold text-stone-900">Supabase Schema & Configuration</h3>
-                <p className="text-xs text-stone-500">
-                  Ready-to-deploy PostgreSQL tables, RLS policies, and Realtime publications
-                </p>
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
+                  <Database className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-stone-900">Supabase Connection & Database</h3>
+                  <p className="text-xs text-stone-500">
+                    Connect PostgreSQL &amp; Supabase Realtime or run the migration script
+                  </p>
+                </div>
               </div>
               <button
                 onClick={() => setShowSchemaModal(false)}
@@ -954,30 +1126,179 @@ export function StaffDashboardPage() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto py-4 space-y-4 text-xs">
-              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800">
-                <strong>Realtime Status:</strong> Active. Sub-millisecond broadcast bus is syncing between TV, Customer, and Staff tabs.
+            {/* Modal Scrollable Body */}
+            <div className="flex-1 overflow-y-auto py-4 space-y-5 text-xs">
+              {/* Live Status Callout */}
+              <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <div>
+                    <span className="font-bold text-emerald-950 block">
+                      {supabaseConfig.connected ? 'Connected to Supabase Project' : 'Zero-Setup Local Realtime Active'}
+                    </span>
+                    <span className="text-[11px] text-emerald-800">
+                      {supabaseConfig.connected
+                        ? `Live connection: ${supabaseConfig.url}`
+                        : 'Sub-millisecond cross-tab broadcast bus is syncing TV, Customer, and Staff screens.'}
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-200/80 text-emerald-900">
+                  {supabaseConfig.connected ? 'Cloud Synced' : 'Ready'}
+                </span>
               </div>
 
-              <div>
-                <span className="font-bold text-stone-800 block mb-1">
-                  Database Schema (/supabase/schema.sql):
+              {/* Supabase Credentials Form */}
+              <div className="bg-stone-50 rounded-2xl p-4 border border-stone-200 space-y-3">
+                <span className="font-bold text-stone-800 block text-xs">
+                  Connect Your Supabase Project (Optional)
                 </span>
-                <pre className="p-3 bg-stone-900 text-stone-200 rounded-xl text-[11px] font-mono overflow-x-auto max-h-56">
-{`-- Tables: restaurants, tables, queue_entries, reservations, allocation_events, notifications, staff
--- Features: Foreign keys, Check constraints, UUID generation, RLS policies, Realtime publication
 
+                <div>
+                  <label className="block text-[11px] font-semibold text-stone-600 mb-1">
+                    Project URL
+                  </label>
+                  <input
+                    type="text"
+                    value={supabaseUrlInput}
+                    onChange={(e) => setSupabaseUrlInput(e.target.value)}
+                    placeholder="https://xyzcompany.supabase.co"
+                    className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 text-stone-900 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-stone-600 mb-1">
+                    Anon Public Key (API Key)
+                  </label>
+                  <input
+                    type="password"
+                    value={supabaseKeyInput}
+                    onChange={(e) => setSupabaseKeyInput(e.target.value)}
+                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 text-stone-900 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={handleTestSupabaseConnection}
+                    disabled={isTestingConnection || !supabaseUrlInput}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isTestingConnection ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                    <span>{isTestingConnection ? 'Testing...' : 'Test & Save Connection'}</span>
+                  </button>
+
+                  {supabaseConfig.connected && (
+                    <button
+                      onClick={handleSeedDatabase}
+                      disabled={isSeeding}
+                      className="px-4 py-2 rounded-xl bg-stone-800 hover:bg-stone-900 text-white font-semibold text-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                    >
+                      {isSeeding ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
+                      <span>{isSeeding ? 'Uploading...' : 'Seed 20 Tables to Supabase'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Connection Test Result Feedback */}
+                {connectionResult && (
+                  <div
+                    className={`p-3 rounded-xl border flex items-start gap-2 text-xs ${
+                      connectionResult.connected
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                        : 'bg-red-50 border-red-300 text-red-900'
+                    }`}
+                  >
+                    {connectionResult.connected ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    )}
+                    <span>{connectionResult.message}</span>
+                  </div>
+                )}
+
+                {seedResult && (
+                  <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs">
+                    {seedResult}
+                  </div>
+                )}
+              </div>
+
+              {/* QR Code Target Domain Configuration (For Vercel & Production) */}
+              <div className="bg-stone-50 rounded-2xl p-4 border border-stone-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-stone-800 text-xs">
+                    TV QR Code Target Domain (For Hosted Vercel App)
+                  </span>
+                  <span className="text-[10px] text-stone-400 font-mono">
+                    Target: {qrUrlInput || 'Auto (Current Origin)'}/join
+                  </span>
+                </div>
+                <p className="text-[11px] text-stone-500">
+                  If your TV display runs on a different device or network, enter your live Vercel domain here (e.g. <code className="bg-stone-200/70 px-1 py-0.5 rounded text-stone-800">https://your-restaurant.vercel.app</code>) so mobile phones scan to the live production server.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={qrUrlInput}
+                    onChange={(e) => setQrUrlInput(e.target.value)}
+                    placeholder="https://your-app.vercel.app"
+                    className="flex-1 px-3 py-2 bg-white rounded-xl border border-stone-200 text-stone-900 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500"
+                  />
+                  <button
+                    onClick={() => setCustomQrUrl(qrUrlInput)}
+                    className="px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 text-white font-semibold text-xs transition-colors cursor-pointer"
+                  >
+                    Save QR URL
+                  </button>
+                </div>
+              </div>
+
+              {/* PostgreSQL SQL Migration Copy Card */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-bold text-stone-800">
+                    PostgreSQL Database Schema (/supabase/schema.sql)
+                  </span>
+                  <button
+                    onClick={handleCopySchema}
+                    className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>{copiedSql ? 'Copied to Clipboard!' : 'Copy SQL Schema'}</span>
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-stone-500 mb-2">
+                  Paste this into your Supabase Dashboard &gt; <strong>SQL Editor</strong> to create all tables (restaurants, tables, queue_entries, reservations, allocation_events, notifications) and enable Realtime.
+                </p>
+
+                <pre className="p-3 bg-stone-900 text-stone-200 rounded-xl text-[11px] font-mono overflow-x-auto max-h-40">
+{`-- 1. Create restaurants, tables, queue_entries, reservations, allocation_events
+-- 2. Enable Realtime Publications:
 ALTER PUBLICATION supabase_realtime ADD TABLE public.queue_entries, public.tables, public.allocation_events;`}
                 </pre>
               </div>
+
+              {/* 3 Step Setup Instructions */}
+              <div className="p-3.5 rounded-2xl bg-orange-50/70 border border-orange-200/80 space-y-1.5 text-[11px] text-stone-700">
+                <span className="font-bold text-orange-950 block">Quick 3-Step Setup:</span>
+                <p>1. Create a project at <strong>supabase.com</strong>.</p>
+                <p>2. Click <strong>SQL Editor</strong>, paste the schema copied above, and click <strong>Run</strong>.</p>
+                <p>3. Go to <strong>Project Settings &gt; API</strong>, copy your Project URL and anon public key, paste above, and click <strong>Test &amp; Save Connection</strong>.</p>
+              </div>
             </div>
 
+            {/* Modal Footer */}
             <div className="pt-3 border-t border-stone-100 flex justify-end">
               <button
                 onClick={() => setShowSchemaModal(false)}
-                className="px-4 py-2 rounded-xl bg-stone-900 text-white font-semibold text-xs cursor-pointer"
+                className="px-5 py-2.5 rounded-xl bg-stone-900 hover:bg-stone-800 text-white font-semibold text-xs transition-colors cursor-pointer"
               >
-                Close
+                Done
               </button>
             </div>
           </div>

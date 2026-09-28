@@ -23,6 +23,7 @@ import {
 } from './initialData';
 import { findBestCandidateForTable } from './tableAllocationService';
 import { sendTableAllocationWhatsApp } from './notificationService';
+import { getSupabaseClient, initSupabase } from './supabaseService';
 
 const STORAGE_KEY_TABLES = 'queuecraft_tables_v1';
 const STORAGE_KEY_QUEUE = 'queuecraft_queue_v1';
@@ -30,6 +31,7 @@ const STORAGE_KEY_RESERVATIONS = 'queuecraft_reservations_v1';
 const STORAGE_KEY_NOTIFS = 'queuecraft_notifications_v1';
 const STORAGE_KEY_RESTAURANT = 'queuecraft_restaurant_v1';
 const STORAGE_KEY_SUPABASE = 'queuecraft_supabase_config_v1';
+const STORAGE_KEY_CUSTOM_QR = 'queuecraft_custom_qr_url_v1';
 
 // BroadcastChannel for sub-millisecond tab-to-tab realtime sync (TV <-> Staff <-> Customer)
 const broadcast = typeof window !== 'undefined' && 'BroadcastChannel' in window
@@ -56,8 +58,12 @@ class RestaurantStore {
     connected: false,
   };
 
+  private customQrUrl: string = '';
+  private supabaseChannel: any = null;
+
   constructor() {
     this.loadFromStorage();
+    this.initSupabaseSync();
 
     // Listen to cross-tab updates
     if (broadcast) {
@@ -79,6 +85,104 @@ class RestaurantStore {
           this.notify();
         }
       });
+    }
+  }
+
+  private initSupabaseSync() {
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    try {
+      // 1. Fetch live queue entries from Supabase
+      client
+        .from('queue_entries')
+        .select('*')
+        .in('status', ['WAITING', 'ALLOCATED', 'OCCUPIED'])
+        .then(({ data, error }) => {
+          if (!error && data && data.length > 0) {
+            this.queue = data;
+            this.recalculatePositions();
+            this.saveToStorage();
+            this.notify();
+          }
+        });
+
+      // 2. Fetch live tables from Supabase
+      client
+        .from('tables')
+        .select('*')
+        .then(({ data, error }) => {
+          if (!error && data && data.length > 0) {
+            this.tables = data;
+            this.saveToStorage();
+            this.notify();
+          }
+        });
+
+      // 3. Setup Realtime subscription
+      if (this.supabaseChannel) {
+        client.removeChannel(this.supabaseChannel);
+      }
+
+      this.supabaseChannel = client
+        .channel('queuecraft_live_realtime')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'queue_entries' },
+          (payload) => {
+            const newRecord = payload.new as QueueEntry;
+            const oldRecord = payload.old as QueueEntry;
+
+            if (payload.eventType === 'INSERT') {
+              if (!this.queue.some((q) => q.id === newRecord.id)) {
+                this.queue.push(newRecord);
+                this.recalculatePositions();
+                this.saveToStorage();
+                this.notify();
+              }
+            } else if (payload.eventType === 'UPDATE') {
+              const idx = this.queue.findIndex((q) => q.id === newRecord.id);
+              if (idx !== -1) {
+                this.queue[idx] = newRecord;
+                this.recalculatePositions();
+                this.saveToStorage();
+                this.notify();
+              }
+            } else if (payload.eventType === 'DELETE') {
+              this.queue = this.queue.filter((q) => q.id !== oldRecord.id);
+              this.recalculatePositions();
+              this.saveToStorage();
+              this.notify();
+            }
+          }
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'tables' },
+          (payload) => {
+            const newTable = payload.new as TableItem;
+            if (payload.eventType === 'UPDATE') {
+              const idx = this.tables.findIndex((t) => t.id === newTable.id);
+              if (idx !== -1) {
+                this.tables[idx] = newTable;
+                this.saveToStorage();
+                this.notify();
+              }
+            }
+          }
+        )
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'allocation_events' },
+          (payload) => {
+            const eventRecord = payload.new as AllocationEvent;
+            this.latestAllocationEvent = eventRecord;
+            this.notify(eventRecord);
+          }
+        )
+        .subscribe();
+    } catch (err) {
+      console.warn('Supabase realtime sync setup warning:', err);
     }
   }
 
@@ -192,6 +296,34 @@ class RestaurantStore {
       anonKey: anonKey.trim(),
       connected: !!(url.trim() && anonKey.trim()),
     };
+    initSupabase(url, anonKey);
+    this.saveToStorage();
+    this.initSupabaseSync();
+    this.notify();
+  }
+
+  public getCustomQrUrl(): string {
+    if (this.customQrUrl) return this.customQrUrl;
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem(STORAGE_KEY_CUSTOM_QR);
+      if (stored) {
+        this.customQrUrl = stored;
+        return stored;
+      }
+    }
+    const envUrl = (import.meta.env.VITE_APP_URL as string) || '';
+    if (envUrl) return envUrl.replace(/\/+$/, '');
+    if (typeof window !== 'undefined') {
+      return window.location.origin;
+    }
+    return '';
+  }
+
+  public setCustomQrUrl(url: string) {
+    this.customQrUrl = url.trim().replace(/\/+$/, '');
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY_CUSTOM_QR, this.customQrUrl);
+    }
     this.saveToStorage();
     this.notify();
   }
@@ -254,6 +386,30 @@ class RestaurantStore {
     this.recalculatePositions();
     this.saveToStorage();
     this.notify();
+
+    // Persist to Supabase if connected
+    const client = getSupabaseClient();
+    if (client) {
+      client
+        .from('queue_entries')
+        .insert({
+          id: newEntry.id,
+          restaurant_id: newEntry.restaurant_id,
+          token_number: newEntry.token_number,
+          queue_date: newEntry.queue_date,
+          customer_name: newEntry.customer_name,
+          phone: newEntry.phone,
+          email: newEntry.email,
+          party_size: newEntry.party_size,
+          status: newEntry.status,
+          position: newEntry.position,
+          joined_at: newEntry.joined_at,
+          notes: newEntry.notes,
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase joinQueue error:', error);
+        });
+    }
 
     // Check if an available table can immediately seat this party!
     this.evaluateAutomaticAllocation();
@@ -356,6 +512,31 @@ class RestaurantStore {
     this.saveToStorage(allocationEvent);
     this.notify(allocationEvent);
 
+    // Sync to Supabase if connected
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('tables').update({ status: 'ALLOCATED', updated_at: nowIso }).eq('id', table.id).then();
+      client.from('queue_entries').update({
+        status: 'ALLOCATED',
+        assigned_table_id: table.id,
+        allocated_at: nowIso,
+        position: 0,
+      }).eq('id', queueItem.id).then();
+      client.from('allocation_events').insert({
+        id: allocationEvent.id,
+        restaurant_id: allocationEvent.restaurant_id,
+        queue_entry_id: allocationEvent.queue_entry_id,
+        table_id: allocationEvent.table_id,
+        event_type: allocationEvent.event_type,
+        metadata: {
+          token_number: allocationEvent.token_number,
+          table_number: allocationEvent.table_number,
+          party_size: allocationEvent.party_size,
+          customer_name: allocationEvent.customer_name,
+        },
+      }).then();
+    }
+
     return allocationEvent;
   }
 
@@ -376,6 +557,11 @@ class RestaurantStore {
       status: newStatus,
       updated_at: nowIso,
     };
+
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('tables').update({ status: newStatus, updated_at: nowIso }).eq('id', tableId).then();
+    }
 
     // If changing from CLEANING (or anything) to AVAILABLE:
     // AUTOMATIC ALLOCATION RUNS!
@@ -407,6 +593,11 @@ class RestaurantStore {
       seated_at: nowIso,
     };
 
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('queue_entries').update({ status: 'OCCUPIED', seated_at: nowIso }).eq('id', queueEntryId).then();
+    }
+
     if (entry.assigned_table_id) {
       const tableIndex = this.tables.findIndex((t) => t.id === entry.assigned_table_id);
       if (tableIndex !== -1) {
@@ -415,6 +606,9 @@ class RestaurantStore {
           status: 'OCCUPIED',
           updated_at: nowIso,
         };
+        if (client) {
+          client.from('tables').update({ status: 'OCCUPIED', updated_at: nowIso }).eq('id', entry.assigned_table_id).then();
+        }
       }
     }
 
@@ -438,6 +632,11 @@ class RestaurantStore {
       completed_at: nowIso,
     };
 
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('queue_entries').update({ status: 'COMPLETED', completed_at: nowIso }).eq('id', queueEntryId).then();
+    }
+
     // Table enters CLEANING state
     if (entry.assigned_table_id) {
       const tableIndex = this.tables.findIndex((t) => t.id === entry.assigned_table_id);
@@ -447,6 +646,9 @@ class RestaurantStore {
           status: 'CLEANING',
           updated_at: nowIso,
         };
+        if (client) {
+          client.from('tables').update({ status: 'CLEANING', updated_at: nowIso }).eq('id', entry.assigned_table_id).then();
+        }
       }
     }
 
@@ -471,6 +673,15 @@ class RestaurantStore {
       notes: reason === 'NO_SHOW' ? 'Customer marked as No-Show' : entry.notes,
     };
 
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('queue_entries').update({
+        status: 'CANCELLED',
+        cancelled_at: nowIso,
+        notes: reason === 'NO_SHOW' ? 'Customer marked as No-Show' : entry.notes,
+      }).eq('id', queueEntryId).then();
+    }
+
     // If customer had an assigned table that wasn't yet occupied, release it back to AVAILABLE
     if (entry.assigned_table_id && entry.status === 'ALLOCATED') {
       const tableIndex = this.tables.findIndex((t) => t.id === entry.assigned_table_id);
@@ -480,6 +691,9 @@ class RestaurantStore {
           status: 'AVAILABLE',
           updated_at: nowIso,
         };
+        if (client) {
+          client.from('tables').update({ status: 'AVAILABLE', updated_at: nowIso }).eq('id', entry.assigned_table_id).then();
+        }
       }
     }
 

@@ -95,6 +95,11 @@ export function useRestaurantStore() {
     restaurantStore.setSupabaseConfig(url, anonKey);
   }, []);
 
+  const customQrUrl = restaurantStore.getCustomQrUrl();
+  const setCustomQrUrl = useCallback((url: string) => {
+    restaurantStore.setCustomQrUrl(url);
+  }, []);
+
   return {
     restaurant,
     tables,
@@ -103,6 +108,8 @@ export function useRestaurantStore() {
     notifications,
     latestAllocationEvent,
     supabaseConfig,
+    customQrUrl,
+    setCustomQrUrl,
 
     // Slices
     waitingQueue,
