@@ -1,0 +1,6 @@
+{
+  "name": "QueueCraft - Restaurant Queue & Table Allocation System",
+  "description": "Production-quality real-time restaurant queue and table allocation prototype with TV display, waiter dashboard, and customer status inspired by Geetham Veg.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
